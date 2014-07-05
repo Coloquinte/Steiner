@@ -131,7 +131,18 @@ struct fixed_size_tree{
     std::array<unsigned char, n-1> sorted_nodes; // The nodes sorted by order of becoming of degree 1 when removing nodes
     std::array<unsigned char, n-1> last_connexion; // When all previous nodes have been removed
 
+    // This function greatly influences the number of trees that are kept after pruning!!!! I kept the best I came up with
     bool operator<(fixed_size_tree<n> const o) const{
+        /*
+        std::array<unsigned char, 2*n-2> connexions, o_connexions;
+        for(int i=0; i<n-1; ++i){
+            connexions[2*i] = sorted_nodes[i];
+            connexions[2*i+1] = last_connexion[i];
+            o_connexions[2*i] = o.sorted_nodes[i];
+            o_connexions[2*i+1] = o.last_connexion[i];
+        }
+        return connexions < o_connexions;
+        */
         return sorted_nodes < o.sorted_nodes || (sorted_nodes == o.sorted_nodes && last_connexion < o.last_connexion);
     }
 
@@ -149,33 +160,12 @@ struct fixed_size_tree{
 
 };
 
-template<typename T, int n>
-std::array<T, 4*n - 8> get_lookup_array(std::array<T, n> x_pos, std::array<T, n> y_pos){
-    std::array<T, 4*n - 8> ret;
-    for(int i=0; i<n-2; ++i){
-        ret[i] = x_pos[i+1];
-        ret[n-2 + i] = y_pos[i+1];
-    }
-    for(int i=0; i< 2*n -4; ++i){
-        ret[2*n-4 + i] = -ret[i];
-    }
-    return ret;
-}
 
 template<int n>
 struct lookup_struct{
     // First the positive influence for all of the entries (x then y), then the negative influence
     std::bitset<4*n - 8> cost;
     int tree_index;
-
-    template<typename T>
-    T evaluate(std::array<T, 4*n - 8> pos) const{
-        T res = 0;
-        for(int i=0; i<4*n -8; ++i){
-            res += (cost[i] ? pos[i] : 0);
-        }
-        return res;
-    }
 };
 
 template<int n>
@@ -357,34 +347,6 @@ std::vector<lookup_struct<n> > get_optimal_costs(std::array<unsigned char, n> ve
     return ret;
 }
 
-/*
-template<int n>
-void generate_all_permutations(std::vector<std::array<unsigned char, n> > & permutations, int size){
-    if(size == 0){
-        permutations.push_back(std::array<unsigned char, n>());
-    }
-    else{
-        std::vector<std::array<unsigned char, n> > local;
-        generate_all_permutations<n>(local, size-1);
-        for(int i=0; i<size; ++i){
-            for(auto const L : local){
-                std::array<unsigned char, n> A;
-                for(int k=0; k<size-1; ++k){
-                    A[k] = L[k];
-                }
-                A[size-1] = i;
-                for(int j=0; j<n; ++j){ // Equivalently, n or size; n is more regular so I chosed it
-                    if(A[j] >= i){
-                        A[j]++;
-                    }
-                }
-                permutations.push_back(A);
-            }
-        }
-    }
-}
-*/
-
 template<int n>
 void generate_all_permutations(std::vector<std::array<unsigned char, n> > & permutations){
     static_assert(n >= 2, "Too small");
@@ -395,6 +357,123 @@ void generate_all_permutations(std::vector<std::array<unsigned char, n> > & perm
     do{
         permutations.push_back(sigma);
     }while(std::next_permutation(sigma.begin(), sigma.end()));
+}
+
+template<int n>
+void report_table(std::vector<std::vector<lookup_struct<n> > > const & POWVs, std::vector<fixed_size_tree<n> > const & f_x_trees){
+    std::cout << "Total of " << POWVs.size() << " permutations" << std::endl;
+
+    std::vector<bool> used(f_x_trees.size(), false);
+    int tot_size = 0, max_size = 0;
+    for(std::vector<lookup_struct<n> > const V : POWVs){
+        tot_size += V.size();
+        max_size = std::max(max_size, (int) V.size());
+        for(auto L : V){
+            used[L.tree_index] = true;
+        }
+    }
+    int tot_used = 0;
+    for(bool B : used){
+        if(B){
+            tot_used++;
+        }
+    }
+    std::cout << "Mean size of lookup table is " << static_cast<float>(tot_size) / POWVs.size() << std::endl;
+    std::cout << "Max size of lookup table is " << max_size << std::endl;
+    std::cout << "A total of " << tot_used << " x_trees are used out of " << f_x_trees.size() << std::endl;
+}
+
+template<int n>
+void write_human_readable_table(std::vector<std::vector<lookup_struct<n> > > POWVs, std::vector<std::array<unsigned char, n> > permutations){
+    assert(POWVs.size() == permutations.size());
+
+    for(int ind = 0; ind < permutations.size(); ++ind){
+        for(auto s : permutations[ind]){
+            std::cout << static_cast<int>(s);
+        }
+        std::cout << " : ";
+        
+        auto const V = POWVs[ind];
+        std::cout << V.size() << "\n";
+        for(auto const L : V){
+            // x cost
+            std::cout << "-";
+            for(int i=0; i < n - 2; ++i){
+                assert(not (L.cost[i] and L.cost[2*n-4 + i]));
+                if(L.cost[i]){
+                    std::cout << "+";
+                }
+                else if(L.cost[2*n-4 + i]){
+                    std::cout << "-";
+                }
+                else{
+                    std::cout << ".";
+                }
+            }
+            std::cout << "+ -";
+            // y cost
+            for(int i=n-2; i < 2*n - 4; ++i){
+                assert(not (L.cost[i] and L.cost[2*n-4 + i]));
+                if(L.cost[i]){
+                    std::cout << "+";
+                }
+                else if(L.cost[2*n-4 + i]){
+                    std::cout << "-";
+                }
+                else{
+                    std::cout << ".";
+                }
+            }
+            std::cout << "+ " << L.tree_index;
+            std::cout << "\n";
+        }
+        std::cout << std::endl;
+    }
+}
+
+template<int n>
+void write_standard_table(std::vector<std::vector<lookup_struct<n> > > table){
+    std::cout << table.size() << std::endl;
+    for(auto line : table){
+        std::cout << line.size() << std::endl;
+        for(auto POWV : line){
+            std::cout << POWV.cost.to_ulong() << " : " << POWV.tree_index << std::endl;
+        }
+    }
+}
+
+template<int n>
+std::vector<std::vector<lookup_struct<n> > > read_table(){
+
+}
+
+template<int n>
+void write_tree_table(std::vector<fixed_size_tree<n> > f_trees){
+    // Output final fixed trees
+    std::cout << f_trees.size() << "\n";
+    for(auto T : f_trees){
+        for(unsigned char c : T.sorted_nodes){
+            std::cout << static_cast<int>(c);
+        }
+        std::cout << " ";
+        for(unsigned char c : T.last_connexion){
+            std::cout << static_cast<int>(c);
+        }
+        std::cout << " : ";
+        for(unsigned char c : T.prufer_representation){
+            std::cout << static_cast<int>(c);
+        }
+        std::cout << "\n";
+    }
+}
+
+template<int n>
+std::vector<fixed_size_tree<n> > read_tree_table(){
+
+}
+
+std::vector<int> greedy_min_cover(std::vector<std::vector<int> > redundant_cover){
+    
 }
 
 int main(){
@@ -437,69 +516,10 @@ int main(){
         POWVs.push_back(get_optimal_costs<n>(sigma, f_x_trees));
     }
 
-    for(int ind = 0; ind < permutations.size(); ++ind){
-        /*
-        for(auto s : permutations[ind]){
-            std::cout << static_cast<int>(s);
-        }
-        std::cout << std::endl;
-        */
-        auto const V = POWVs[ind];
-        std::cout << V.size() << "\n";
-        for(auto const L : V){
-            // x cost
-            std::cout << "-";
-            for(int i=0; i < n - 2; ++i){
-                assert(not (L.cost[i] and L.cost[2*n-4 + i]));
-                if(L.cost[i]){
-                    std::cout << "+";
-                }
-                else if(L.cost[2*n-4 + i]){
-                    std::cout << "-";
-                }
-                else{
-                    std::cout << ".";
-                }
-            }
-            std::cout << "+ -";
-            // y cost
-            for(int i=n-2; i < 2*n - 4; ++i){
-                assert(not (L.cost[i] and L.cost[2*n-4 + i]));
-                if(L.cost[i]){
-                    std::cout << "+";
-                }
-                else if(L.cost[2*n-4 + i]){
-                    std::cout << "-";
-                }
-                else{
-                    std::cout << ".";
-                }
-            }
-            std::cout << "+ " << L.tree_index;
-            std::cout << "\n";
-        }
-        std::cout << std::endl;
-    }
+    report_table(POWVs, f_x_trees);
+    //write_standard_table(POWVs);
+    //write_human_readable_table<n>(POWVs, permutations);
     
-    
-    /*
-    // Output final fixed trees
-    std::cout << f_x_trees.size() << "\n";
-    for(auto T : f_x_trees){
-        for(unsigned char c : T.sorted_nodes){
-            std::cout << static_cast<int>(c);
-        }
-        std::cout << " ";
-        for(unsigned char c : T.last_connexion){
-            std::cout << static_cast<int>(c);
-        }
-        std::cout << " : ";
-        for(unsigned char c : T.prufer_representation){
-            std::cout << static_cast<int>(c);
-        }
-        std::cout << "\n";
-    }
-    */
 
     return 0;
 }
