@@ -50,52 +50,105 @@ struct labeled_point : public point<T>{
 
 template<int n>
 struct lookup_struct{
-    // First the positive influence for all of the entries (x then y), then the negative influence
-    std::bitset<4*n - 8> cost;
-    
+    // First the x entries (n-3 positive from 2 to n-1 then n-3 negative from 1 to n-2), then the y entries
+    // On a Steiner trees, the first and last entries are not taken into account (always negative/always positive)
+    // The second may not be positive, like the n-2 one cannot be negative, hence the n-3 entries
+    std::bitset<4*n - 12> cost;
+
+    // Could be vectorized quite easily on AVX
     template<typename T>
-    T evaluate(std::array<T, 4*n-8> position_vector){
-        T res = 0;
-        for(int i=0; i < 4*n -8; ++i){
-            res += (cost[i] ? position_vector[i] : 0);
+    T evaluate(std::array<T, 4*n-12> position_vector){
+        std::array<T, 4*n-12> masked;
+        for(int i=0; i < 4*n -12; ++i){
+            masked[i] = (cost[i] ? position_vector[i] : 0);
         }
-        return res;
+        return std::accumulate(masked.begin(), masked.end(), 0);
     }
 
-    // Dominates another POWV (non strict)
-    bool dominates(lookup_struct<n> const o) const{
-        int active=0, active_o=0;
-        bool d = true;
-        // The last iteration on x and y is superfluous since it sets active back to 0 if the lookup_struct is valid
-        // This way we have just one loop
-        for(int i=0; i<2*n-4; ++i){
-            if(cost[i]){
-                active++;
-            }
-            if(cost[2*n-4+i]){
-                active--;
-            }
-            if(o.cost[i]){
-                active_o++;
-            }
-            if(o.cost[2*n-4+i]){
-                active_o--;
-            }
-            d = d and (active <= active_o);
+    lookup_struct(){
+        for(int i=0; i<4*n-12; ++i){
+            cost[b] = false;
         }
-        return d;
+    }
+
+    // All of them assume everything is initialized to false
+    void set_positive_x(int ind){
+        assert(ind > 1);
+        assert(ind < n-1);
+        cost[ind - 2] = true;
+    }
+    void set_negative_x(int ind){
+        assert(ind > 0);
+        assert(ind < n-2);
+        cost[n-3+ind-1] = true;
+    }
+    void set_positive_y(int ind){
+        assert(ind > 1);
+        assert(ind < n-1);
+        cost[2*n-6+ind-2] = true;
+    }
+    void set_negative_y(int ind){
+        assert(ind > 0);
+        assert(ind < n-2);
+        cost[3*n-9+ind-1] = true;
     }
 };
 
+// Dominates another POWV (non strict)
+template<int n>
+bool dominates(lookup_struct<n> const & a, lookup_struct<n> const & b) const{
+    // Avoid code duplication between x and y
+    auto evaluate = [&](int inpos)->bool{
+        const int neg_offset = n-3;
+        bool ret = true;
+        // Cost of b on this edge - cost of a on this edge
+        int active = 0;
+        if(a.cost[inpos]){
+            --active;
+        }
+        if(b.cost[inpos]){
+            ++active;
+        }
+        ret = ret && active >= 0;
+        for(int i=0; i<n-4; ++i){
+            if(b.cost[inpos+i+1]){
+                ++active;
+            }
+            if(a.cost[inpos+i+1]){
+                --active;
+            }
+            if(b.cost[inpos+neg_offset+i]){
+                --active;
+            }
+            if(a.cost[inpos+neg_offset+i]){
+                ++active;
+            }
+            ret = ret && active >= 0;
+        }
+        if(b.cost[inpos+neg_offset+i]){
+            --active;
+        }
+        if(a.cost[inpos+neg_offset+i]){
+            ++active;
+        }
+        ret = ret && active >= 0;
+
+        return ret;
+    };
+    return evaluate(0) and evaluate(2*n-6);
+}
+
+// Both arrays are in order
 template<typename T, int n>
-std::array<T, 4*n - 8> get_lookup_array(std::array<T, n> x_pos, std::array<T, n> y_pos){
-    std::array<T, 4*n - 8> ret;
-    for(int i=0; i<n-2; ++i){
-        ret[i] = x_pos[i+1];
-        ret[n-2 + i] = y_pos[i+1];
+std::array<T, 4*n - 12> get_lookup_array(std::array<T, n> x_pos, std::array<T, n> y_pos){
+    std::array<T, 4*n - 12> ret;
+    for(int i=0; i<n-3; ++i){
+        ret[       i] =  x_pos[i+1];
+        ret[n-3   +i] = -x_pos[i+2];
     }
-    for(int i=0; i< 2*n -4; ++i){
-        ret[2*n-4 + i] = -ret[i];
+    for(int i=0; i<n-3; ++i){
+        ret[2*n-6 +i] =  y_pos[i+1];
+        ret[3*n-9 +i] = -y_pos[i+2];
     }
     return ret;
 }
@@ -105,13 +158,6 @@ struct sorted_tree{
     static_assert(n >= 2, "A tree must have at least 2 vertices");
 
     std::array<unsigned char, 2*n-2> edges;
-
-    bool operator<(sorted_tree<n> const o) const{
-        return edges < o.edges;
-        // Or order on the first vertex of each edge
-        
-        // Or order on the second one
-    }
 
     // To prune obviously suboptimal Steiner trees and keep only one representant for equivalent ones if agressive is set to true
     bool is_kept(bool agressive = true) const{
@@ -158,12 +204,10 @@ struct sorted_tree{
 
             // Set the cost in the lookup table
             if(min_branch[f] != 0 and min_branch[f] != n-1){
-                ret.cost[n-2+min_branch[f]-1] = false;  // positive part is false
-                ret.cost[3*n-6+min_branch[f]-1] = true; // negative part is true
+                ret.set_negative_y(min_branch[f]);
             }
             if(max_branch[f] != 0 and max_branch[f] != n-1){
-                ret.cost[n-2+max_branch[f]-1] = true;  // positive part is true
-                ret.cost[3*n-6+max_branch[f]-1] = false; // negative part is false
+                ret.set_positive_y(min_branch[f]);
             }
 
 
@@ -179,12 +223,17 @@ struct sorted_tree{
 
         // Final calculation of the x cost
         for(int i=1; i<n-1; ++i){
-            ret.cost[i-1] = (after[i] < before[i]);
-            ret.cost[2*n-4+i-1] = (after[i] > before[i]);
+            if(after[i] < before[i]){
+                ret.set_positive_x(i);
+            }
+            if(after[i] > before[i]){
+                ret.set_negative_x(i);
+            }
         }
         return ret;
     }
 
+    // The x array is in sorted order, the y array in the corresponding order
     template<typename T>
     T get_cost(std::array<T, n> x_pos, std::array<T, n> y_pos) const{
         T cost = 0;
@@ -206,6 +255,40 @@ struct sorted_tree{
         return cost;
     }
 };
+
+// Various comparison functions; they change the outcome when selecting trees for cover
+bool basic_lexicographic(sorted_tree<n> const a, sorted_tree<n> const b){
+    return a.edges < b.edges;
+}
+bool first_lexicographic(sorted_tree<n> const a, sorted_tree<n> const b){
+    std::array<unsigned char, n> a_e, b_e;
+    for(int i=0; i<n; ++i){
+        a_e[i] = a.edges[2*i];
+        b_e[i] = b.edges[2*i];
+    }
+    return a_e < b_e;
+}
+bool prufer_lexicographic(sorted_tree<n> const a, sorted_tree<n> const b){
+    std::array<unsigned char, n> a_e, b_e;
+    for(int i=0; i<n; ++i){
+        a_e[i] = a.edges[2*i+1];
+        b_e[i] = b.edges[2*i+1];
+    }
+    return a_e < b_e;
+}
+bool smallest_lexicographic(sorted_tree<n> const a, sorted_tree<n> const b){
+    std::array<unsigned char, n> a_e, b_e;
+    for(int i=0; i<n; ++i){
+        a_e[i] = std::min(a.edges[2*i], a.edges[2*i+1]);
+        b_e[i] = std::min(b.edges[2*i], b.edges[2*i+1]);
+    }
+    return a_e < b_e;
+}
+
+
+bool operator<(sorted_tree<n> const a, sorted_tree<n> const b){
+    return smallest_lexicographic(a, b);
+}
 
 // Greedy minimum set cover algorithm to get the best subset of the trees
 std::vector<int> min_cover(std::vector<std::vector<int> > const & set_coverers, int nb_coverers){
@@ -300,9 +383,11 @@ sorted_tree<n> decode_prufer(std::array<unsigned char, n-2> const prufer_represe
 
 template<int n>
 std::vector<sorted_tree<n> > generate_trees(bool agressive=true){
-    auto rec_helper = [](std::array<int, n-2> & A, int size, std::vector<sorted_tree<n> > & ret){
+    std::vector<sorted_tree<n> > ret;
+    std::array<int, n-2> A;
+    auto rec_helper = [&](int size){
         if(size > 0){
-            for(int i=1; i<n-1; ++i){ // We do not need to generate trees with degree more than 1 for nodes 0 and n-1: this restricts our Prufer representations
+            for(int i=1; i<n-1; ++i){ // We do not need to generate trees with degree more than 1 for nodes 0 and n-1: this efficiently restricts the bruteforce
                 A[size-1] = i;
                 rec_helper(A, size-1, ret);
             }
@@ -315,11 +400,23 @@ std::vector<sorted_tree<n> > generate_trees(bool agressive=true){
         }
     };
 
-    std::vector<sorted_tree<n> > ret_val;
-    std::array<int, n-2> tmp;
-    rec_helper(tmp, n-2, ret_val);
+    rec_helper(n-2);
 
     return ret_val;
+}
+
+template<int n>
+std::vector<std::array<unsigned char, n> > get_permutations(){
+    std::vector<std::array<unsigned char, n> > ret;
+    static_assert(n >= 2, "Too small");
+    std::array<unsigned char, n> sigma;
+    for(int i=0; i<n; ++i){
+        sigma[i] = i;
+    }
+    do{
+        ret.push_back(sigma);
+    }while(std::next_permutation(sigma.begin(), sigma.end()));
+    return ret;
 }
 
 // Get the POWVs for the permutation and the corresponding trees
