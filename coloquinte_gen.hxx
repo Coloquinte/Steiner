@@ -22,6 +22,9 @@
  */
 
 #include "coloquinte_flute.hxx"
+
+#include <map>
+#include <set>
 #include <iostream>
 
 // Greedy minimum set cover algorithm to get the best subset of the trees
@@ -81,17 +84,17 @@ std::vector<int> min_cover(std::vector<std::vector<int> > const & set_coverers, 
 }
 
 template<int n>
-sorted_tree<n> decode_prufer(std::array<unsigned char, n-2> const prufer_representation){
+sorted_tree<n> decode_prufer(std::array<int, n-2> const prufer_representation){
     sorted_tree<n> ret;
 
-    std::array<int, n> degrees(n, 1), degrees;
+    std::array<int, n> degrees;
     for(int & d : degrees){ d = 1; }
-    for(unsigned char const p : prufer_representation){
+    for(int const p : prufer_representation){
         degrees[p]++;
     }
 
     for(int k=0; k<n-2; k++){
-        unsigned char p = prufer_representation[k];
+        unsigned char p = static_cast<unsigned char>(prufer_representation[k]);
         int i=0;
         while(degrees[i] != 1){
             assert(i < n);
@@ -116,34 +119,35 @@ sorted_tree<n> decode_prufer(std::array<unsigned char, n-2> const prufer_represe
 }
 
 template<int n>
-std::vector<sorted_tree<n> > generate_trees(bool agressive=true){
-    std::vector<sorted_tree<n> > ret;
-    std::array<int, n-2> A;
-    auto rec_helper = [&](int size){
-        if(size > 0){
-            for(int i=1; i<n-1; ++i){ // We do not need to generate trees with degree more than 1 for nodes 0 and n-1: this efficiently restricts the bruteforce
-                A[size-1] = i;
-                rec_helper(A, size-1, ret);
-            }
+void generate_trees_helper(bool agressive, int size, std::array<int, n-2> & A, std::vector<sorted_tree<n> > & ret){
+    assert(size <= n-2);
+    if(size > 0){
+        for(int i=1; i<n-1; ++i){ // We do not need to generate trees with degree more than 1 for nodes 0 and n-1: this efficiently restricts the bruteforce
+            A[size-1] = i;
+            generate_trees_helper(agressive, size-1, A, ret);
         }
-        else{
-            sorted_tree<n> tr = decode_prufer(A);
-            if(tr.is_kept(agressive)){
-                ret.push_back(tr);
-            }
+    }
+    else{
+        sorted_tree<n> tr = decode_prufer<n>(A);
+        if(tr.is_kept(agressive)){
+            ret.push_back(tr);
         }
-    };
-
-    rec_helper(n-2);
-
-    return ret_val;
+    }
 }
 
 template<int n>
-std::vector<std::array<unsigned char, n> > generate_permutations(){
-    std::vector<std::array<unsigned char, n> > ret;
+std::vector<sorted_tree<n> > generate_trees(bool agressive=true){
+    std::vector<sorted_tree<n> > ret;
+    std::array<int, n-2> A;
+    generate_trees_helper<n>(agressive, n-2, A, ret);
+    return ret;
+}
+
+template<int n>
+std::vector<std::array<int, n> > generate_permutations(){
+    std::vector<std::array<int, n> > ret;
     static_assert(n >= 2, "Too small");
-    std::array<unsigned char, n> sigma;
+    std::array<int, n> sigma;
     for(int i=0; i<n; ++i){
         sigma[i] = i;
     }
@@ -155,10 +159,10 @@ std::vector<std::array<unsigned char, n> > generate_permutations(){
 
 // Get the POWVs for the permutation and the corresponding trees
 template<int n>
-std::vector<std::pair<lookup_struct<n>, std::vector<int> > > get_cover(std::vector<sorted_tree<n> > const & trees, std::array<int, n> sigma){
-    std::unordered_map<lookup_struct<n>, std::vector<int> > costs;
+std::vector<std::pair<lookup_cost<n>, std::vector<int> > > get_cover(std::vector<sorted_tree<n> > const & trees, std::array<int, n> sigma){
+    std::map<lookup_cost<n>, std::vector<int> > costs;
     for(int i=0; i<trees.size(); ++i){
-        lookup_struct<n> cur_cost = trees[i].get_lookup_cost(sigma);
+        lookup_cost<n> cur_cost = trees[i].get_lookup_cost(sigma);
 
         // Insert in the multimap and remove dominated costs
         auto cur_it = costs.find(cur_cost);
@@ -167,24 +171,31 @@ std::vector<std::pair<lookup_struct<n>, std::vector<int> > > get_cover(std::vect
         }
         else{ // Not in the map: should we insert it/remove other entries
             bool to_insert = true;
-            for(auto it = costs.begin(); it != costs.end(); ++it){
-                lookup_struct<n> const old_cost = it->first;
+            auto it = costs.begin();
+            while( it != costs.end() ){
+                lookup_cost<n> const old_cost = it->first;
                 // old_cost != cur_cost since cur_cost is not in the multimap
-                if(old_cost.dominates(cur_cost)){
-                    to_insert = false;
-                }
-                else if(cur_cost.dominates(old_cost)){
+                if(dominates(cur_cost, old_cost)){
+                    auto new_it = std::next(it);
                     costs.erase(it);// remove old_cost
+                    it = new_it;
+                }
+                else if(dominates(old_cost, cur_cost)){
+                    to_insert = false;
+                    ++it;
+                }
+                else{
+                    ++it;
                 }
             }
             if(to_insert){
-                std::pair<lookup_struct<n>, std::vector<int> > elt(cur_cost, std::vector<int>(1, i));
+                std::pair<lookup_cost<n>, std::vector<int> > elt(cur_cost, std::vector<int>(1, i));
                 costs.insert(elt);
             }
         }
     }
     // Push the remaining indices to the vector
-    std::vector<std::pair<lookup_struct<n>, std::vector<int> > > sigmas_cover;
+    std::vector<std::pair<lookup_cost<n>, std::vector<int> > > sigmas_cover;
     for(auto it = costs.begin(); it != costs.end(); ++it){
         sigmas_cover.push_back(*it);
     }
@@ -193,8 +204,8 @@ std::vector<std::pair<lookup_struct<n>, std::vector<int> > > get_cover(std::vect
 
 // Just get a set of trees that cover every POWV of every permutation: the goal is to generate a tree lookup table
 template<int n>
-std::vector<std::vector<std::pair<lookup_struct<n>, std::vector<int> > > > get_cover(std::vector<sorted_tree<n> > const & trees, std::vector<std::array<int, n> > const & permutations){
-    std::vector<std::vector<int> > set_coverers;
+std::vector<std::vector<std::pair<lookup_cost<n>, std::vector<int> > > > get_cover(std::vector<sorted_tree<n> > const & trees, std::vector<std::array<int, n> > const & permutations){
+    std::vector<std::vector<std::pair<lookup_cost<n>, std::vector<int> > > > set_coverers;
 
     for(auto sigma : permutations){
         set_coverers.push_back(get_cover<n>(trees, sigma));
@@ -202,3 +213,65 @@ std::vector<std::vector<std::pair<lookup_struct<n>, std::vector<int> > > > get_c
     return set_coverers;
 }
 
+template<int n>
+void output_report(std::vector<std::vector<std::pair<lookup_cost<n>, std::vector<int> > > > const & set_cover){
+    std::cout << set_cover.size() << " permutations\n";
+    int tot_size = 0, max_size = 0;
+    std::set<int> used_trees;
+    for(auto const & s : set_cover){
+        tot_size += s.size();
+        max_size = std::max(max_size, (int) s.size());
+        for(auto const l : s){
+            used_trees.insert(l.second.at(0));
+        }
+    }
+    std::cout << "The average number of lookups is " << static_cast<float>(tot_size) / static_cast<float>(set_cover.size()) << " and the maximum number of POWVs is " << max_size << " with a total of " << used_trees.size() << " trees" << std::endl;
+}
+
+template<int n>
+void output_trees(std::vector<sorted_tree<n> > const & trees){
+    for(auto const & T : trees){
+        for(unsigned char c : T.edges){
+            std::cout << static_cast<int>(c) << " ";
+        }
+        std::cout << "\n";
+    }
+}
+template<int n>
+void output_lookup(std::vector<std::vector<std::pair<lookup_cost<n>, std::vector<int> > > > const & set_cover){
+    for(auto const & s : set_cover){
+        std::cout << s.size() << "\n";
+        for(auto const l : s){
+            std::cout << lookup_struct<n>(l.first).to_ulong() << " " << l.second.at(0) << "\n";
+        }
+    }
+}
+
+template<int n>
+void output_readable_lookup(std::vector<std::vector<std::pair<lookup_cost<n>, std::vector<int> > > > const & set_cover, std::vector<std::array<int, n> > const & permutations){
+    for(int i = 0; i<set_cover.size(); ++i){
+        for(int k : permutations[i]){
+            std::cout << k;
+        }
+        std::cout << "\n" << set_cover[i].size() << "\n";
+        for(auto const & l : set_cover[i]){
+            std::cout << lookup_struct<n>(l.first).to_string() << " " << l.second.at(0) << "\n";
+        }
+        std::cout << std::endl;
+    }
+}
+
+// The same but outputs the cost too
+template<int n>
+void output_verbose_lookup(std::vector<std::vector<std::pair<lookup_cost<n>, std::vector<int> > > > const & set_cover, std::vector<std::array<int, n> > const & permutations){
+    for(int i = 0; i<set_cover.size(); ++i){
+        for(int k : permutations[i]){
+            std::cout << k;
+        }
+        std::cout << "\n" << set_cover[i].size() << "\n";
+        for(auto const & l : set_cover[i]){
+            std::cout << l.first.to_string() << "\n" << lookup_struct<n>(l.first).to_string() << " " << l.second.at(0) << "\n";
+        }
+        std::cout << std::endl;
+    }
+}

@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cassert>
+#include <string>
 
 template<typename T>
 struct point{
@@ -38,8 +39,51 @@ struct point{
 template<typename T>
 struct labeled_point : public point<T>{
     int ind;
-    labeled_point(T a, T b, int i) : point(a, b), ind(i){}
+    labeled_point(T a, T b, int i) : point<T>(a, b), ind(i){}
 };
+
+template<int n>
+struct lookup_cost{
+    std::array<unsigned char, n-1> x_cost, y_cost;
+
+    lookup_cost(){
+        for(unsigned char & c : x_cost){
+            c=0;
+        }
+        for(unsigned char & c : y_cost){
+            c=0;
+        }
+    }
+
+    bool operator<(lookup_cost<n> const o) const{
+        return x_cost < o.x_cost || (x_cost == o.x_cost && y_cost < o.y_cost);
+    }
+
+    std::string to_string() const{
+        std::string ret;
+        for(unsigned char const c : x_cost){
+            ret += std::to_string(static_cast<int>(c));
+        }
+        ret += "  "; // Two spaces to align with lookup_struct
+        for(unsigned char const c : y_cost){
+            ret += std::to_string(static_cast<int>(c));
+        }
+        return ret;
+    }
+};
+
+// Dominates another POWV (non strict)
+template<int n>
+bool dominates(lookup_cost<n> const & a, lookup_cost<n> const & b){
+    bool ret = true;
+    for(int i=0; i<n-1; ++i){
+        ret = ret && (a.x_cost[i] <= b.x_cost[i]);
+    }
+    for(int i=0; i<n-1; ++i){
+        ret = ret && (a.y_cost[i] <= b.y_cost[i]);
+    }
+    return ret;
+}
 
 template<int n>
 struct lookup_struct{
@@ -47,6 +91,10 @@ struct lookup_struct{
     // On a Steiner trees, the first and last entries are not taken into account (always negative/always positive)
     // The second may not be positive, like the n-2 one cannot be negative, hence the n-3 entries
     std::bitset<4*n - 12> cost;
+
+    bool operator<(lookup_struct<n> const o) const{
+        return cost.to_ulong() < o.cost.to_ulong();
+    }
 
     // Could be vectorized quite easily on AVX
     template<typename T>
@@ -58,78 +106,82 @@ struct lookup_struct{
         return std::accumulate(masked.begin(), masked.end(), 0);
     }
 
-    lookup_struct(){
-        for(int i=0; i<4*n-12; ++i){
-            cost[b] = false;
+    lookup_struct(lookup_cost<n> const & o){
+        for(int i=0; i<n-3; ++i){
+            cost[      i] = (o.x_cost[i+1] > o.x_cost[i+2]); // Diminution of cost => positive contribution
+        }
+        for(int i=0; i<n-3; ++i){
+            cost[  n-3+i] = (o.x_cost[i] < o.x_cost[i+1]); // Augmentation of cost => negative contribution
+        }
+        for(int i=0; i<n-3; ++i){
+            cost[2*n-6+i] = (o.y_cost[i+1] > o.y_cost[i+2]); // Diminution of cost => positive contribution
+        }
+        for(int i=0; i<n-3; ++i){
+            cost[3*n-9+i] = (o.y_cost[i] < o.y_cost[i+1]); // Augmentation of cost => negative contribution
         }
     }
 
-    // All of them assume everything is initialized to false
-    void set_positive_x(int ind){
-        assert(ind > 1);
-        assert(ind < n-1);
-        cost[ind - 2] = true;
-    }
-    void set_negative_x(int ind){
-        assert(ind > 0);
-        assert(ind < n-2);
-        cost[n-3+ind-1] = true;
-    }
-    void set_positive_y(int ind){
-        assert(ind > 1);
-        assert(ind < n-1);
-        cost[2*n-6+ind-2] = true;
-    }
-    void set_negative_y(int ind){
-        assert(ind > 0);
-        assert(ind < n-2);
-        cost[3*n-9+ind-1] = true;
-    }
-};
-
-// Dominates another POWV (non strict)
-template<int n>
-bool dominates(lookup_struct<n> const & a, lookup_struct<n> const & b) const{
-    // Avoid code duplication between x and y
-    auto evaluate = [&](int inpos)->bool{
+    std::string to_string() const{
         const int neg_offset = n-3;
-        bool ret = true;
-        // Cost of b on this edge - cost of a on this edge
-        int active = 0;
-        if(a.cost[inpos]){
-            --active;
+
+        std::string ret;
+        // x output
+        ret += "-";
+        if(cost[neg_offset]){
+            ret += "-";
         }
-        if(b.cost[inpos]){
-            ++active;
+        else{
+            ret += ".";
         }
-        ret = ret && active >= 0;
         for(int i=0; i<n-4; ++i){
-            if(b.cost[inpos+i+1]){
-                ++active;
+            if(cost[i]){
+                ret += "+";
             }
-            if(a.cost[inpos+i+1]){
-                --active;
+            else if(cost[neg_offset+i+1]){
+                ret += "-";
             }
-            if(b.cost[inpos+neg_offset+i]){
-                --active;
+            else{
+                ret += ".";
             }
-            if(a.cost[inpos+neg_offset+i]){
-                ++active;
-            }
-            ret = ret && active >= 0;
         }
-        if(b.cost[inpos+neg_offset+i]){
-            --active;
+        if(cost[n-4]){
+            ret += "+";
         }
-        if(a.cost[inpos+neg_offset+i]){
-            ++active;
+        else{
+            ret += ".";
         }
-        ret = ret && active >= 0;
+        
+        ret += "+ -";
+ 
+        // y output
+        if(cost[2*n-6+neg_offset]){
+            ret += "-";
+        }
+        else{
+            ret += ".";
+        }
+        for(int i=0; i<n-4; ++i){
+            if(cost[2*n-6+i]){
+                ret += "+";
+            }
+            else if(cost[2*n-6+neg_offset+i+1]){
+                ret += "-";
+            }
+            else{
+                ret += ".";
+            }
+        }
+        if(cost[2*n-6+n-4]){
+            ret += "+";
+        }
+        else{
+            ret += ".";
+        }
+        ret += "+";
 
         return ret;
-    };
-    return evaluate(0) and evaluate(2*n-6);
-}
+    }
+};
 
 // Both arrays are in order
 template<typename T, int n>
@@ -175,9 +227,9 @@ struct sorted_tree{
     }
 
     // Assumes the tree is at least potentially optimal
-    lookup_struct<n> get_lookup_cost(std::array<int, n> permutation) const{
-        lookup_struct<n> ret;
-        for(bool & b : ret.cost){ b=false; }
+    lookup_cost<n> get_lookup_cost(std::array<int, n> permutation) const{
+        // Default-initialized to false
+        lookup_cost<n> ret;
 
         std::array<int, n> min_branch, max_branch;
         for(int i=0; i<n; ++i){
@@ -191,21 +243,11 @@ struct sorted_tree{
         for(int j=0; j<2*n-2; j+=2){
             // y cost
             // The edge is the current pair of uint8_t
-            f = edges[j]; s = edges[j+1];
+            unsigned char f = edges[j], s = edges[j+1];
             max_branch[s] = std::max(min_branch[f], max_branch[s]);
             min_branch[s] = std::min(max_branch[f], min_branch[s]);
 
-            // Set the cost in the lookup table
-            if(min_branch[f] != 0 and min_branch[f] != n-1){
-                ret.set_negative_y(min_branch[f]);
-            }
-            if(max_branch[f] != 0 and max_branch[f] != n-1){
-                ret.set_positive_y(min_branch[f]);
-            }
-
-
             // x cost
-            unsigned char f = edges[j], s = edges[j+1+1];
             if(f < s){
                 after[f]++; before[s]++;
             }
@@ -214,15 +256,36 @@ struct sorted_tree{
             }
         }
 
+        int cur_x_cost = 0;
         // Final calculation of the x cost
-        for(int i=1; i<n-1; ++i){
+        for(int i=0; i<n-1; ++i){
+            assert(std::abs(after[i] - before[i]) <= 1); // Correctly pruned tree set
             if(after[i] < before[i]){
-                ret.set_positive_x(i);
+                --cur_x_cost;
             }
             if(after[i] > before[i]){
-                ret.set_negative_x(i);
+                ++cur_x_cost;
             }
+            ret.x_cost[i] = static_cast<unsigned char>(cur_x_cost);
         }
+
+        // Final calculation of the y cost
+        std::array<int, n> relative_cost;
+        for(int i=0; i<n; ++i){
+            relative_cost[i] = 0;
+        }
+        for(int i=0; i<n; ++i){
+            --relative_cost[max_branch[i]];
+            ++relative_cost[min_branch[i]];
+        }
+        
+        int cur_y_cost = 0;
+        for(int i=0; i<n-1; ++i){
+            assert(std::abs(relative_cost[i]) <= 1);
+            cur_y_cost += relative_cost[i];
+            ret.y_cost[i] = static_cast<unsigned char>(cur_y_cost);
+        }
+
         return ret;
     }
 
@@ -250,17 +313,22 @@ struct sorted_tree{
 };
 
 // Various comparison functions; they change the outcome when selecting trees for cover
+template<int n>
 bool basic_lexicographic(sorted_tree<n> const a, sorted_tree<n> const b){
     return a.edges < b.edges;
 }
+template<int n>
 bool first_lexicographic(sorted_tree<n> const a, sorted_tree<n> const b){
-    std::array<unsigned char, n> a_e, b_e;
+    std::array<unsigned char, 2*n> a_e, b_e;
     for(int i=0; i<n; ++i){
-        a_e[i] = a.edges[2*i];
-        b_e[i] = b.edges[2*i];
+        a_e[i]   = a.edges[2*i];
+        a_e[n+i] = a.edges[2*i+1];
+        b_e[i]   = b.edges[2*i];
+        b_e[n+i] = b.edges[2*i+1];
     }
     return a_e < b_e;
 }
+template<int n>
 bool prufer_lexicographic(sorted_tree<n> const a, sorted_tree<n> const b){
     std::array<unsigned char, n> a_e, b_e;
     for(int i=0; i<n; ++i){
@@ -269,6 +337,7 @@ bool prufer_lexicographic(sorted_tree<n> const a, sorted_tree<n> const b){
     }
     return a_e < b_e;
 }
+template<int n>
 bool smallest_lexicographic(sorted_tree<n> const a, sorted_tree<n> const b){
     std::array<unsigned char, n> a_e, b_e;
     for(int i=0; i<n; ++i){
@@ -278,7 +347,8 @@ bool smallest_lexicographic(sorted_tree<n> const a, sorted_tree<n> const b){
     return a_e < b_e;
 }
 
+template<int n>
 bool operator<(sorted_tree<n> const a, sorted_tree<n> const b){
-    return smallest_lexicographic(a, b);
+    return first_lexicographic(a, b);
 }
 
